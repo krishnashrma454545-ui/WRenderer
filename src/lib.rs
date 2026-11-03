@@ -8,6 +8,7 @@ use winit::{
     window::Window,
 };
 mod camera;
+mod hdr;
 pub mod model;
 pub mod resources;
 pub mod texture;
@@ -54,6 +55,7 @@ pub struct State {
     light_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
     light_render_pipeline: wgpu::RenderPipeline,
+    hdr: hdr::HdrPipeline,
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
@@ -180,7 +182,7 @@ impl State {
                 required_limits: if cfg!(target_arch = "wasm32") {
                     wgpu::Limits::downlevel_webgl2_defaults()
                 } else {
-                    wgpu::Limits::default()
+                    wgpu::Limits::downlevel_defaults()
                 },
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,
@@ -210,6 +212,7 @@ impl State {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
+        let hdr = hdr::HdrPipeline::new(&device, &config);
         let depth_texture =
             texture::Texture::create_depth_texture(&device, &config, "depth_texture");
 
@@ -513,6 +516,7 @@ impl State {
             light_buffer,
             light_bind_group,
             light_render_pipeline,
+            hdr,
         })
     }
 
@@ -520,6 +524,11 @@ impl State {
         if width > 0 && height > 0 {
             self.config.width = width;
             self.config.height = height;
+            if width > 0 && height > 0 {
+                self.hdr
+                    .resize(&self.device, new_size.width, new_size.height);
+            }
+
             self.surface.configure(&self.device, &self.config);
             self.is_surface_configured = true;
             self.depth_texture =
@@ -590,7 +599,7 @@ impl State {
             let mut _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: self.hdr.view(),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -633,7 +642,7 @@ impl State {
                 &self.light_bind_group,
             );
         }
-
+        self.hdr.process(&mut encoder, &view);
         self.queue.submit(iter::once(encoder.finish()));
         self.queue.present(output);
 
