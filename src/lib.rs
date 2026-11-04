@@ -1,5 +1,5 @@
 use std::{iter, sync::Arc};
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, wgc::resource};
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -56,6 +56,8 @@ pub struct State {
     light_bind_group: wgpu::BindGroup,
     light_render_pipeline: wgpu::RenderPipeline,
     hdr: hdr::HdrPipeline,
+    environment_bind_group: wgpu::BindGroup,
+    sky_pipeline: wgpu::RenderPipeline,
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
@@ -341,6 +343,52 @@ impl State {
                 .await
                 .unwrap();
 
+        let hdr_loader = resources::HdrLoader::new(&device);
+        let sky_bytes = resources::load_binary("pure-sky.hdr").await?;
+        let sky_texture = hdr_loader.from_equirectangular_bytes(
+            &device,
+            &queue,
+            &sky_bytes,
+            1080,
+            Some("Sky Texture"),
+        )?;
+
+        let environment_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("environment_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+
+        let sky_pipeline = {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Sky pipeline Layout"),
+                bind_group_layouts : &[Some[(&camera_bind_group_layout),Some(&environment_layout)]]
+            });
+
+            let shader = wgpu::include_wgsl!("shader/sky.wgsl");
+                create_render_pipeline(
+                    &device,
+                    &layout,
+                    hdr.format(),
+                    Some(texture::Texture::DEPTH_FORMAT),
+                    &[],
+                    wgpu::PrimitiveTopology::TriangleList,
+                    shader,
+                )
+            };
+
+
+
+        let enviroment_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor)
         const SPACE_BETWEEN: f32 = 3.0;
         let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
@@ -481,7 +529,7 @@ impl State {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: texture::Texture::DEPTH_FORMAT,
                     depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -517,6 +565,8 @@ impl State {
             light_bind_group,
             light_render_pipeline,
             hdr,
+            environment_bind_group: wgpu::BindGroup,
+            sky_pipeline: wgpu::RenderPipeline,
         })
     }
 
