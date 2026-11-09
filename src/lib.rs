@@ -1,5 +1,5 @@
 use std::{iter, sync::Arc};
-use wgpu::{util::DeviceExt, wgc::resource};
+use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     event::*,
@@ -61,6 +61,62 @@ pub struct State {
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
+
+pub fn create_render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    color_format: wgpu::TextureFormat,
+    depth_format: Option<wgpu::TextureFormat>,
+    vertex_layouts: &[Option<wgpu::VertexBufferLayout<'static>>],
+    topology: wgpu::PrimitiveTopology,
+    shader: wgpu::ShaderModuleDescriptor<'_>,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(shader);
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            buffers: vertex_layouts,
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
+}
 
 // The light gizmo shader only reads vertex positions. Declaring the full
 // `ModelVertex` layout would leave locations 1 and 2 unconsumed, which RADV
@@ -184,7 +240,7 @@ impl State {
                 required_limits: if cfg!(target_arch = "wasm32") {
                     wgpu::Limits::downlevel_webgl2_defaults()
                 } else {
-                    wgpu::Limits::downlevel_defaults()
+                    wgpu::Limits::default()
                 },
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,
@@ -253,7 +309,7 @@ impl State {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -343,52 +399,81 @@ impl State {
                 .await
                 .unwrap();
 
-        let hdr_loader = resources::HdrLoader::new(&device);
-        let sky_bytes = resources::load_binary("pure-sky.hdr").await?;
-        let sky_texture = hdr_loader.from_equirectangular_bytes(
-            &device,
-            &queue,
-            &sky_bytes,
-            1080,
-            Some("Sky Texture"),
-        )?;
+        let hdr_loader = hdr::HdrLoader::new(&device);
+        let sky_texture = match resources::load_binary("pure-sky.hdr").await {
+            Ok(sky_bytes) => hdr_loader.from_equirectangular_bytes(
+                &device,
+                &queue,
+                &sky_bytes,
+                1080,
+                Some("Sky Texture"),
+            )?,
+            Err(err) => {
+                log::warn!("Unable to load pure-sky.hdr ({err}); using a solid sky color");
+                texture::CubeTexture::from_color(
+                    &device,
+                    &queue,
+                    [16, 32, 64, 255],
+                )
+            }
+        };
 
         let environment_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("environment_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::Cube,
-                        multisampled: false,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
             });
 
         let sky_pipeline = {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Sky pipeline Layout"),
-                bind_group_layouts : &[Some[(&camera_bind_group_layout),Some(&environment_layout)]]
+                bind_group_layouts: &[Some(&camera_bind_group_layout), Some(&environment_layout)],
+                immediate_size: 0,
             });
 
             let shader = wgpu::include_wgsl!("shader/sky.wgsl");
-                create_render_pipeline(
-                    &device,
-                    &layout,
-                    hdr.format(),
-                    Some(texture::Texture::DEPTH_FORMAT),
-                    &[],
-                    wgpu::PrimitiveTopology::TriangleList,
-                    shader,
-                )
-            };
+            create_render_pipeline(
+                &device,
+                &layout,
+                hdr.format(),
+                Some(texture::Texture::DEPTH_FORMAT),
+                &[],
+                wgpu::PrimitiveTopology::TriangleList,
+                shader,
+            )
+        };
 
-
-
-        let enviroment_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor)
+        let environment_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("environment_bind_group"),
+            layout: &environment_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(sky_texture.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sky_texture.sampler()),
+                },
+            ],
+        });
         const SPACE_BETWEEN: f32 = 3.0;
         let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
@@ -448,7 +533,7 @@ impl State {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                        format: hdr.format(),
                     blend: Some(wgpu::BlendState {
                         alpha: wgpu::BlendComponent::REPLACE,
                         color: wgpu::BlendComponent::REPLACE,
@@ -508,7 +593,7 @@ impl State {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format,
+                    format: hdr.format(),
                         blend: Some(wgpu::BlendState {
                             alpha: wgpu::BlendComponent::REPLACE,
                             color: wgpu::BlendComponent::REPLACE,
@@ -565,8 +650,8 @@ impl State {
             light_bind_group,
             light_render_pipeline,
             hdr,
-            environment_bind_group: wgpu::BindGroup,
-            sky_pipeline: wgpu::RenderPipeline,
+            environment_bind_group,
+            sky_pipeline,
         })
     }
 
@@ -576,7 +661,7 @@ impl State {
             self.config.height = height;
             if width > 0 && height > 0 {
                 self.hdr
-                    .resize(&self.device, new_size.width, new_size.height);
+                    .resize(&self.device, width, height);
             }
 
             self.surface.configure(&self.device, &self.config);
@@ -674,6 +759,12 @@ impl State {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+
+            // Draw the sky first; it only fills pixels that are still at the far plane.
+            _render_pass.set_pipeline(&self.sky_pipeline);
+            _render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            _render_pass.set_bind_group(1, &self.environment_bind_group, &[]);
+            _render_pass.draw(0..3, 0..1);
 
             // Light gizmo first, so the instanced cubes depth-test against it.
             _render_pass.set_pipeline(&self.light_render_pipeline);

@@ -91,19 +91,41 @@ impl CameraController {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
+    pub view_pos: [f32; 4],
+    pub view: [[f32; 4]; 4],
     pub view_proj: [[f32; 4]; 4],
+    pub inv_proj: [[f32; 4]; 4],
+    pub inv_view: [[f32; 4]; 4],
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         use cgmath::SquareMatrix;
         Self {
+            view_pos: [0.0; 4],
+            view: cgmath::Matrix4::identity().into(),
             view_proj: cgmath::Matrix4::identity().into(),
+            inv_proj: cgmath::Matrix4::identity().into(),
+            inv_view: cgmath::Matrix4::identity().into(),
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera) {
+        use cgmath::SquareMatrix;
+
+        let view = cgmath::Matrix4::look_at_rh(camera.eye, camera.target, camera.up);
+        let proj = cgmath::perspective(
+            cgmath::Deg(camera.fovy),
+            camera.aspect,
+            camera.znear,
+            camera.zfar,
+        );
+
+        self.view_pos = camera.eye.to_homogeneous().into();
+        self.view = view.into();
         self.view_proj = camera.build_view_projection_matrix().into();
+        self.inv_proj = proj.invert().unwrap().into();
+        self.inv_view = view.invert().unwrap().into();
     }
 }
 

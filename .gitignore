@@ -5,3 +5,8 @@
 .idea/
 .vscode/
 /pkg
+
+# local run/debug output
+*.log
+run_err*.txt
+run_out*.txt

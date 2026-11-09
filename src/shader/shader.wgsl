@@ -1,10 +1,13 @@
-struct CameraUniform {
+struct Camera {
+  view_pos: vec4<f32>,
+  view: mat4x4<f32>,
   view_proj: mat4x4<f32>,
-  view_position: vec4<f32>,
-};
+  inv_proj: mat4x4<f32>,
+  inv_view: mat4x4<f32>,
+}
 
 @group(1) @binding(0)
-var<uniform> camera: CameraUniform;
+var<uniform> camera: Camera;
 
 struct Light {
   position: vec3<f32>,
@@ -79,7 +82,7 @@ fn vs_main(
     out.tex_coords = model.tex_coords;
     out.tangent_position = tangent_matrix * world_position.xyz;
     out.tangent_light_position = tangent_matrix * light.position;
-    out.tangent_view_position = tangent_matrix * camera.view_position.xyz;
+    out.tangent_view_position = tangent_matrix * camera.view_pos.xyz;
     return out;
 }
 

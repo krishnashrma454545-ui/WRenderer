@@ -1,23 +1,24 @@
-use wgpu::{Operations, TextureUsages, wgc::pipeline};
+use std::io::Cursor;
+
+use image::codecs::hdr::HdrDecoder;
 
 use crate::{create_render_pipeline, texture};
 
 pub struct HdrPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    texture: texture::Texture,
     width: u32,
     height: u32,
-    format: wpgu::textureFormat,
+    format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
 }
 
 pub struct HdrLoader {
     texture_format: wgpu::TextureFormat,
-    equirect_Layout: wgpu::BindGroupLayout,
+    equirect_layout: wgpu::BindGroupLayout,
     equirect_to_cubemap: wgpu::ComputePipeline,
 }
-
-
 
 impl HdrPipeline {
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
@@ -32,7 +33,7 @@ impl HdrPipeline {
             height,
             format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            wpgu::FilterMode::Nearest,
+            wgpu::FilterMode::Nearest,
             Some("Hdr::texture"),
         );
 
@@ -58,17 +59,32 @@ impl HdrPipeline {
             ],
         });
 
-        let shader = wgpu::include_wgsl!("shader/hsr.wgsl");
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelinelayoutDescriptor {
-            label: None,
-            bind_group_layout: &[Some(&layout)],
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Hdr::bind_group"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&texture.sampler),
+                },
+            ],
+        });
+
+        let shader = wgpu::include_wgsl!("shader/hdr.wgsl");
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Hdr::pipeline_layout"),
+            bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
 
         let pipeline = create_render_pipeline(
             device,
             &pipeline_layout,
-            config.forget.add_srgb_suffix(),
+            config.format,
             None,
             &[],
             wgpu::PrimitiveTopology::TriangleList,
@@ -78,11 +94,11 @@ impl HdrPipeline {
         Self {
             pipeline,
             bind_group,
-            layout,
             texture,
             width,
             height,
             format,
+            layout,
         }
     }
 
@@ -91,8 +107,9 @@ impl HdrPipeline {
             device,
             width,
             height,
-            wgpu::TextureFormat::Rgba16Float,
+            self.format,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::FilterMode::Nearest,
             Some("Hdr::texture"),
         );
         self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -105,7 +122,7 @@ impl HdrPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.texture.sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.texture.sampler),
                 },
             ],
         });
@@ -113,7 +130,11 @@ impl HdrPipeline {
         self.height = height;
     }
 
-    pub fn view(&self) -> &wgpu::TextureFormat {
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.texture.view
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
         self.format
     }
 
@@ -121,14 +142,18 @@ impl HdrPipeline {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Hdr::Process"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output,
-                reslove_target: None,
-                ops: Operations {
+                view: output,
+                resolve_target: None,
+                ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
@@ -138,8 +163,9 @@ impl HdrPipeline {
 
 impl HdrLoader {
     pub fn new(device: &wgpu::Device) -> Self {
-        let module = device.create_shader_module(wgpu::include_wgsl!("equirectangular.wgsl"));
-        let texture_format = wgpu::TextureFormat::Rgba32Float;
+        let module = device.create_shader_module(wgpu::include_wgsl!("shader/equirectangular.wgsl"));
+        let texture_format = wgpu::TextureFormat::Rgba16Float;
+
         let equirect_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("HdrLoader::equirect_layout"),
             entries: &[
@@ -167,19 +193,28 @@ impl HdrLoader {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layout: &[Some(&equirect_layout)],
+            label: Some("HdrLoader::pipeline_layout"),
+            bind_group_layouts: &[Some(&equirect_layout)],
             immediate_size: 0,
         });
 
+        let equirect_to_cubemap = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("HdrLoader::equirect_to_cubemap"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("compute_equirect_to_cubemap"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         Self {
-            equirect_to_cubemap,
             texture_format,
-            equirect_Layout,
+            equirect_layout,
+            equirect_to_cubemap,
         }
     }
 
-    pub fn from_equirectanglar_bytes(
+    pub fn from_equirectangular_bytes(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -187,57 +222,44 @@ impl HdrLoader {
         dst_size: u32,
         label: Option<&str>,
     ) -> anyhow::Result<texture::CubeTexture> {
-        {
-            let hdr_decoder = HdrDecoder::new(Cursor::new(data))?;
-            hdr_decoder.read_image_transform(
-                |pix| {
-                    let rgb = pix.to_hdr();
-                    [rgb.0[0], rgb.0[1], rgb.0[2], 1.0f32]
-                },
-                &mut pixels[..],
-            )?;
-            pixels
-        };
-        #[cfg(target_arch="wasm32")]
-        let pixel = hdr_decoder.read_image_native()?
-        into_iter()
-            .map(|pix| {
-                let rgb = pix.to_hdr();
-                [rgb.0[0],rgb.0[1], rgb.0[2],1.0f32]
-            })
-            .collect::<Vec<_>>();
+        let hdr_decoder = HdrDecoder::new(Cursor::new(data))?;
+        let img = image::DynamicImage::from_decoder(hdr_decoder)?;
+        let pixels = img.to_rgba32f();
+        let (width, height) = pixels.dimensions();
+
         let src = texture::Texture::create_2d_texture(
             device,
-            meta.width,
-            meta.height,
-            self.texture_format,
+            width,
+            height,
+            wgpu::TextureFormat::Rgba32Float,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             wgpu::FilterMode::Linear,
-            None,
+            label,
         );
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &src.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d ::ZERO,
+                origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytemuck::cast_slice(&pixels),
+            bytemuck::cast_slice(pixels.as_raw()),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(src.size.width * std::mem::size_of::<[f32;4]>() as u32),
-                rows_per_image: Some(src.size.height),
+                bytes_per_row: Some(width * std::mem::size_of::<[f32; 4]>() as u32),
+                rows_per_image: Some(height),
             },
-            src.size,
+            src.texture.size(),
         );
 
         let dst = texture::CubeTexture::create_2d(
-            device,dst_size,
+            device,
+            dst_size,
             dst_size,
             self.texture_format,
             1,
-            wgpu:TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             wgpu::FilterMode::Nearest,
             label,
         );
@@ -255,24 +277,26 @@ impl HdrLoader {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&src.view),
-
                 },
-                 wgpu::BindGroupEntry {
-                     binding: 1,
-                     resource: wgpu::BindingResource::TextureView(&src.view),
-                 },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&dst_view),
+                },
             ],
         });
 
         let mut encoder = device.create_command_encoder(&Default::default());
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label
-        });
-        let num_workgroups = (dst_size + 15) / 16;
-        pass.set_pipeline(&self.equirect_to_cubemap);
-        pass.set_bind_group(0, &bind_group, &[]);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.equirect_to_cubemap);
+            pass.set_bind_group(0, &bind_group, &[]);
 
-        drop(pass);
+            let num_workgroups = (dst_size + 15) / 16;
+            pass.dispatch_workgroups(num_workgroups, num_workgroups, 6);
+        }
 
         queue.submit([encoder.finish()]);
 
