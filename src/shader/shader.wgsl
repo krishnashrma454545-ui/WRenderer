@@ -68,9 +68,7 @@ fn vs_main(
     let world_tangent = normalize(normal_matrix * model.tangent);
     let world_bitangent = normalize(normal_matrix * model.bitangent);
 
-    // The normal map is stored in tangent space, so we rotate the rest of the
-    // lighting inputs into tangent space instead of rotating every sampled
-    // normal into world space.
+
     let tangent_matrix = transpose(mat3x3<f32>(
         world_tangent,
         world_bitangent,
@@ -86,7 +84,7 @@ fn vs_main(
     return out;
 }
 
-// Fragment shader
+
 
 @group(0) @binding(0)
 var t_diffuse: texture_2d<f32>;
@@ -102,7 +100,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let object_color: vec4<f32> = textureSample(t_diffuse, s_diffuse, in.tex_coords);
     let object_normal: vec4<f32> = textureSample(t_normal, s_normal, in.tex_coords);
 
-    // We don't need (or want) much ambient light, so 0.1 is fine
+
     let ambient_strength = 0.1;
     let ambient_color = light.color * ambient_strength;
 
