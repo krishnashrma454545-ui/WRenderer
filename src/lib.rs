@@ -410,11 +410,7 @@ impl State {
             )?,
             Err(err) => {
                 log::warn!("Unable to load pure-sky.hdr ({err}); using a solid sky color");
-                texture::CubeTexture::from_color(
-                    &device,
-                    &queue,
-                    [16, 32, 64, 255],
-                )
+                texture::CubeTexture::from_color(&device, &queue, [16, 32, 64, 255])
             }
         };
 
@@ -533,7 +529,7 @@ impl State {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                        format: hdr.format(),
+                    format: hdr.format(),
                     blend: Some(wgpu::BlendState {
                         alpha: wgpu::BlendComponent::REPLACE,
                         color: wgpu::BlendComponent::REPLACE,
@@ -593,7 +589,7 @@ impl State {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                    format: hdr.format(),
+                        format: hdr.format(),
                         blend: Some(wgpu::BlendState {
                             alpha: wgpu::BlendComponent::REPLACE,
                             color: wgpu::BlendComponent::REPLACE,
@@ -660,8 +656,7 @@ impl State {
             self.config.width = width;
             self.config.height = height;
             if width > 0 && height > 0 {
-                self.hdr
-                    .resize(&self.device, width, height);
+                self.hdr.resize(&self.device, width, height);
             }
 
             self.surface.configure(&self.device, &self.config);

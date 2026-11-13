@@ -13,7 +13,7 @@ A simple renderer made in wgpu with light and shadow texture obj file load
 
 ## Demo
 ![pic](example/demo.png)
-![Demo](example/ani.gif)
+
 
 ## Getting Started
 - Uses wgpu
@@ -34,7 +34,7 @@ cargo run
 
 ```
 ## Help
-if ur using already compiled bin then just visual one.
+if ur using already compiled bin then just wrenderer one(keep in mind that u need res.tar.z file just decompress here and then paste in same place and it will run).
 ```
  ./wrenderer
 ```
